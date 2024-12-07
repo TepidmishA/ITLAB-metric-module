@@ -91,6 +91,6 @@ def draw_rectangles(image_dir, annotation_file, num_images):
 if __name__ == '__main__':
 	image_dir = "DLMini/data/imgs_track_09_0-2000"  # Замените на путь к папке с изображениями
 	annotation_file = "DLMini/layout/track_09_0-2000.txt"  # Замените на путь к txt файлу с разметкой
-	num_images = 1000  # Количество изображений для обработки
+	num_images = 2000  # Количество изображений для обработки
 
 	draw_rectangles(image_dir, annotation_file, num_images)
