@@ -3,8 +3,8 @@ import fake_detector as fakeD
 
 
 if __name__ == '__main__':
-	groundtruth_path = "C:\\Users\\24092\\PycharmProjects\\ITLAB-metric-module\\DLMini\\layout\\track_09_0-2000.txt"
-	detections_path = "C:\\Users\\24092\\PycharmProjects\\ITLAB-metric-module\\fake_detections.txt"
+	groundtruth_path = "./DLMini/layout/track_09_0-2000.txt"
+	detections_path = "./fake_detections.txt"
 
 	fakeD.generate(groundtruth_path, detections_path)
 
