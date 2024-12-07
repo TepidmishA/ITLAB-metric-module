@@ -1,45 +1,3 @@
-import argparse
-import numpy as np
-import argparse
-
-
-def cli_arguments():
-	"""
-    Обрабатывает аргументы командной строки для скрипта вычисления средней точности (AP).
-
-    :return: Объект с аргументами.
-    """
-	parser = argparse.ArgumentParser(description="Calculate Average Precision (AP) for object detection.")
-
-	parser.add_argument("--groundtruth", "-g",
-						help="Path to the ground truth file.",
-						type=str,
-						dest="groundtruth_path",
-						required=True,
-						default="DLMini/layout/track_09_0-2000.txt")
-
-	parser.add_argument("--detections", "-d",
-						help="Path to the detections file.",
-						type=str,
-						dest="detections_path",
-						required=True,
-						default="DLMini/layout/track_09_0-2000.txt")
-
-	parser.add_argument("--iou", "-iou",
-						help="Intersection over Union (IoU) threshold (default: 0.5).",
-						type=float,
-						dest="iou_threshold",
-						required=False,
-						default=0.5)
-
-	parser.add_argument("--verbose", "-v",
-						help="Enable verbose output.",
-						action="store_true",
-						dest="verbose")
-
-	return parser.parse_args()
-
-
 class AveragePrecisionCalculator:
 	def __init__(self, iou_threshold=0.5):
 		"""
@@ -72,30 +30,45 @@ class AveragePrecisionCalculator:
 		"""
 		Вычисляет среднюю точность (Average Precision, AP).
 
+		Схема вычисления:
+		1. Обнаруженные окаймляющие прямоугольники сортируются
+		   в порядке убывания достоверности наличия в них объектов.
+		2. Для каждого обнаруженного прямоугольника выполняется
+		   поиск соответствия из разметки согласно условию IoU ≥ τ.
+		3. Выполняется вычисление точности (Precision) и отклика (Recall).
+		(4). Строится зависимость точности от отклика.
+		5. Вычисляется площадь под графиком построенной зависимости (AP - Average Precision).
+
+		Предположительно разметка детектора имеет следующий вид:
+		0 CAR 0.77 232 128 290 168
+
 		:return: Значение средней точности AP.
 		"""
-		# Сортируем предсказания по уверенности (confidence)
+		# 1. Сортируем предсказания по достоверности
 		all_detections = self._sort_detections_by_confidence()
-		# Общее количество объектов в истинной разметке
-		total_gt = sum(len(self.groundtruths.get(frame, [])) for frame in self.groundtruths)
-		tp, fp, all_tp, all_fp = 0, 0, [], []
 
-		# Сравниваем предсказания с истинной разметкой по каждому кадру
+		# 2. Поиск соответствия из разметки для каждого обнаруженного прямоугольника
+		tp, fp, fn = 0, 0, sum(len(self.groundtruths.get(frame, [])) for frame in self.groundtruths)
+		all_tp, all_fp, all_fn = [], [], []
 		for frame_id, dets in all_detections.items():
-			gts = self.groundtruths.get(frame_id, [])
-			tps, fps, _ = self._match_detections_to_groundtruth(dets, gts)
-			tp += tps
-			fp += fps
+			gts = self.groundtruths.get(frame_id, [])	# список всех прямоугольник для кадра
+			tp_det, fp_det, fn_det = self._match_detections_to_groundtruth(dets, gts)
+			tp += tp_det
+			fp += fp_det
+			fn -= tp_det
 			all_tp.append(tp)
 			all_fp.append(fp)
+			all_fn.append(fn)
 
-		# Вычисляем precision и recall для всех точек
-		precisions, recalls = self._calculate_precision_recall(all_tp, all_fp, total_gt)
-		# Вычисляем площадь под кривой зависимости точности от отклика
+		# 3. Вычисляем precision и recall для всех точек
+		precisions, recalls = self._calculate_precision_recall(all_tp, all_fp, all_fn)
+
+		# 5. Вычисляем площадь под графиком зависимости точности от отклика
 		return self._compute_ap(precisions, recalls)
 
 	# ======= Приватные методы =======
-	def _parse_annotations(self, file_path):
+	@staticmethod
+	def _parse_annotations(file_path):
 		"""
 		Парсинг файла с истинной разметкой.
 
@@ -107,13 +80,14 @@ class AveragePrecisionCalculator:
 			for line in f:
 				frame_id, class_name, *bbox = line.strip().split()
 				frame_id = int(frame_id)
-				bbox = list(map(float, bbox))
+				bbox = list(map(float, bbox))	# Преобразуем str в float
 				if frame_id not in annotations:
 					annotations[frame_id] = []
 				annotations[frame_id].append(bbox)
 		return annotations
 
-	def _parse_detections(self, file_path):
+	@staticmethod
+	def _parse_detections(file_path):
 		"""
 		Парсинг файла с предсказаниями детектора.
 
@@ -133,7 +107,8 @@ class AveragePrecisionCalculator:
 				detections[frame_id].append([class_name, conf] + bbox)
 		return detections
 
-	def _calculate_iou(self, bbox1, bbox2):
+	@staticmethod
+	def _calculate_iou(bbox1, bbox2):
 		"""
 		Вычисляет Intersection over Union (IoU) для двух прямоугольников.
 
@@ -171,23 +146,39 @@ class AveragePrecisionCalculator:
 			_, conf, x1, y1, x2, y2 = det
 			best_iou = 0
 			best_gt_idx = -1
+			# среди всех прямоугольников истинной разметки ищем тот, с которым наибольшее значение iou
 			for idx, gt in enumerate(groundtruths):
 				iou = self._calculate_iou([x1, y1, x2, y2], gt)
 				if iou > best_iou:
 					best_iou = iou
 					best_gt_idx = idx
+
+			# Потенциальные проблемы с best_gt_idx not in matched
+			# Возможна ситуация, когда для 2-х предсказаний значение iou будем максимальным с одним прямоугольником истинной разметки,
+			# Допустим у первого iou = 0.7, у второго iou = 0.8.
+			# Пусть первым обработали тот, у которого iou = 0.7. Следовательно, этот прямоугольник добавили в matched.
+			# Далее обработали тот, у которого iou = 0.8. Однако его прямоугольник уже находится в matched, и сработает условие с fp += 1.
+
+			# Суть в том, что мы ищем соответствия для истинной разметки. И если нашлось несколько
+			# соответствий с best_iou >= self.iou_threshold, значит какое-то из них лишнее
+
+			# Но есть ощущение, что могут быть проблемы
 			if best_iou >= self.iou_threshold and best_gt_idx not in matched:
 				tp += 1
 				matched.add(best_gt_idx)
 			else:
+				# также сюда добавляются повторные детекции
 				fp += 1
 
 		fn = len(groundtruths) - len(matched)
+
 		return tp, fp, fn
 
 	def _sort_detections_by_confidence(self):
 		"""
-		Сортирует предсказания по уверенности (confidence).
+		Сортирует предсказания по достоверности.
+		Предположительно разметка детектора имеет следующий вид:
+		0 CAR 0.77 232 128 290 168
 
 		:return: Словарь {frame_id: [отсортированный список предсказаний]}.
 		"""
@@ -196,25 +187,39 @@ class AveragePrecisionCalculator:
 			sorted_detections[frame] = sorted(dets, key=lambda x: -x[1])
 		return sorted_detections
 
-	def _calculate_precision_recall(self, all_tp, all_fp, total_gt):
+	def _calculate_precision_recall(self, all_tp, all_fp, all_fn):
 		"""
 		Вычисляет массивы precision (точности) и recall (отклика).
 
-		:param all_tp: Кумулятивное количество TP (true positives).
-		:param all_fp: Кумулятивное количество FP (false positives).
-		:param total_gt: Общее количество объектов в истинной разметке.
+		:param all_tp: Список TP (true positives).
+		:param all_fp: Список FP (false positives).
 		:return: Списки значений precision и recall.
 		"""
+		count_gt = [len(self.groundtruths.get(frame, [])) for frame in self.groundtruths]
+		count_det = [len(self.groundtruths.get(frame, [])) for frame in self.detections]
+
 		precisions = []
 		recalls = []
-		for tp, fp in zip(all_tp, all_fp):
-			precision = tp / (tp + fp) if tp + fp > 0 else 0
-			recall = tp / total_gt if total_gt > 0 else 0
+		for tp, fp, fn, gt, det in zip(all_tp, all_fp, all_fn, count_gt, count_det):
+			if gt > 0 and det > 0:
+				precision = tp / (tp + fp)
+				recall = tp / (tp + fn)
+			elif gt == 0 and det > 0:  # tp == 0 nad fp > 0 and fn == 0
+				precision = 0
+				recall = 1
+			elif gt > 0 and det == 0:  # tp == 0 nad fp == 0 and fn > 0
+				precision = 1
+				recall = 0
+			elif gt == 0 and det == 0:  # tp == 0 nad fp == 0 and fn == 0
+				precision = 1
+				recall = 1
+
 			precisions.append(precision)
 			recalls.append(recall)
 		return precisions, recalls
 
-	def _compute_ap(self, precisions, recalls):
+	@staticmethod
+	def _compute_ap(precisions, recalls):
 		"""
 		Вычисляет площадь под кривой зависимости precision от recall.
 
@@ -222,31 +227,18 @@ class AveragePrecisionCalculator:
 		:param recalls: Список значений recall.
 		:return: Значение средней точности AP.
 		"""
-		precisions = [0] + precisions + [0]
-		recalls = [0] + recalls + [1]
+		precisions = [1.0] + precisions + [-1]
+		recalls = [0.0] + recalls + [recalls[-1]]
 
-		for i in range(len(precisions) - 2, -1, -1):
-			precisions[i] = max(precisions[i], precisions[i + 1])
-
+		last_prec = 1
+		last_rec = 0
 		ap = 0
-		for i in range(1, len(recalls)):
-			ap += (recalls[i] - recalls[i - 1]) * precisions[i]
+		for i in range(len(precisions)):
+			if last_prec <= precisions[i]:
+				continue
+			else:
+				ap += (last_prec * (recalls[i] - last_rec))
+				last_rec = recalls[i]
+				last_prec = precisions[i]
+
 		return ap
-
-
-def main():
-	args = cli_arguments()
-
-	# Инициализация класса и загрузка данных
-	ap_calculator = AveragePrecisionCalculator(iou_threshold=args.iou_threshold)
-	ap_calculator.load_groundtruths(args.groundtruth_path)
-	ap_calculator.load_detections(args.detections_path)
-
-	# Вычисление средней точности
-	ap = ap_calculator.calculate_average_precision()
-
-	# Печать результата
-	if args.verbose:
-		print(f"Groundtruths: {ap_calculator.groundtruths}")
-		print(f"Detections: {ap_calculator.detections}")
-	print(f"Average Precision (AP): {ap:.4f}")
